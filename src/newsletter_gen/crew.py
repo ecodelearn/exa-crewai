@@ -1,16 +1,37 @@
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from newsletter_gen.tools.research import SearchAndContents, FindSimilar, GetContents
-from langchain_anthropic import ChatAnthropic
-from langchain_groq import ChatGroq
 from datetime import datetime
 import streamlit as st
 from typing import Union, List, Tuple, Dict
 from langchain_core.agents import AgentFinish
 import json
-from langchain_google_genai import ChatGoogleGenerativeAI
+import yaml
 import os
+from langchain_openai import ChatOpenAI
 
+# Função para carregar a configuração dos LLMs e a chave da API da Exa
+def load_config():
+    config_path = os.path.join(os.path.dirname(__file__), 'config/llm_config.yaml')
+    with open(config_path, 'r') as file:
+        config = yaml.safe_load(file)
+    return config
+
+# Carregar a configuração dos LLMs
+config = load_config()
+llms = config['llms']
+exa_api_key = config.get('exa_api_key')
+
+# Definir a chave da API da Exa como variável de ambiente, se não estiver definida
+if exa_api_key:
+    os.environ['EXA_API_KEY'] = exa_api_key
+
+# Função para obter o LLM pelo id
+def get_llm_by_id(llm_id):
+    for llm_config in llms:
+        if llm_config['id'] == llm_id:
+            return ChatOpenAI(model_name=llm_config['model_name'], api_key=llm_config['api_key'])
+    raise ValueError(f"LLM com id {llm_id} não suportado")
 
 @CrewBase
 class NewsletterGenCrew:
@@ -18,14 +39,6 @@ class NewsletterGenCrew:
 
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
-
-    def llm(self):
-        llm = ChatAnthropic(model_name="claude-3-sonnet-20240229", max_tokens=4096)
-        # llm = ChatGroq(model="llama3-70b-8192")
-        # llm = ChatGroq(model="mixtral-8x7b-32768")
-        # llm = ChatGoogleGenerativeAI(google_api_key=os.getenv("GOOGLE_API_KEY"))
-
-        return llm
 
     def step_callback(
         self,
@@ -44,7 +57,6 @@ class NewsletterGenCrew:
             if isinstance(agent_output, list) and all(
                 isinstance(item, tuple) for item in agent_output
             ):
-
                 for action, description in agent_output:
                     # Print attributes based on assumed structure
                     st.write(f"Agent Name: {agent_name}")
@@ -67,31 +79,34 @@ class NewsletterGenCrew:
 
     @agent
     def researcher(self) -> Agent:
+        llm = get_llm_by_id("openai")
         return Agent(
             config=self.agents_config["researcher"],
-            tools=[SearchAndContents(), FindSimilar(), GetContents()],
+            tools=[SearchAndContents(api_key=exa_api_key), FindSimilar(), GetContents()],
             verbose=True,
-            llm=self.llm(),
+            llm=llm,
             step_callback=lambda step: self.step_callback(step, "Research Agent"),
         )
 
     @agent
     def editor(self) -> Agent:
+        llm = get_llm_by_id("openai")
         return Agent(
             config=self.agents_config["editor"],
             verbose=True,
-            tools=[SearchAndContents(), FindSimilar(), GetContents()],
-            llm=self.llm(),
+            tools=[SearchAndContents(api_key=exa_api_key), FindSimilar(), GetContents()],
+            llm=llm,
             step_callback=lambda step: self.step_callback(step, "Chief Editor"),
         )
 
     @agent
     def designer(self) -> Agent:
+        llm = get_llm_by_id("openai")
         return Agent(
             config=self.agents_config["designer"],
             verbose=True,
             allow_delegation=False,
-            llm=self.llm(),
+            llm=llm,
             step_callback=lambda step: self.step_callback(step, "HTML Writer"),
         )
 
@@ -129,3 +144,8 @@ class NewsletterGenCrew:
             verbose=2,
             # process=Process.hierarchical, # In case you wanna use that instead https://docs.crewai.com/how-to/Hierarchical/
         )
+
+# Executando a crew
+if __name__ == "__main__":
+    inputs = {"topic": "AI in healthcare"}
+    NewsletterGenCrew().crew().kickoff(inputs=inputs)
